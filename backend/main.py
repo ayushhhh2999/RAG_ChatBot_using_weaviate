@@ -315,7 +315,7 @@ Respond ONLY in JSON:
 @app.delete("/clean-database")
 async def clean_db():
     result = clean_messed_up_data()
-    return {"status": "ok", "deleted": result["deleted"]}
+    return {"status": "ok", "deleted": result["cleaned"]}
 
 
 @app.get("/documents")

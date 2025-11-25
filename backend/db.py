@@ -163,35 +163,66 @@ def is_human_readable(text: str) -> bool:
 # 6. CLEANING CORRUPTED DATA
 # ==========================================
 def clean_messed_up_data():
-    print("🔍 Scanning for corrupted text…")
-    data = collection.query.fetch_objects(limit=999999)
+    all_objects = []
+    cursor = None
+    batch_size = 5000   # safe batch size
 
-    remove = []
-    for obj in data.objects:
-        chunk = obj.properties.get("chunk", "")
-        if not is_human_readable(chunk):
-            remove.append(obj.uuid)
+    # Step 1: Fetch all objects in batches
+    while True:
+        resp = collection.query.fetch_objects(
+            limit=batch_size,
+            after=cursor
+        )
 
-    for uid in remove:
-        collection.data.delete_by_id(uid)
+        objs = resp.objects
+        if not objs:
+            break
 
-    print(f"🧹 Removed {len(remove)} corrupted chunks.")
-    return {"deleted": len(remove)}
+        all_objects.extend(objs)
+        cursor = objs[-1].uuid
+
+    # Step 2: Clean corrupted objects
+    cleaned = 0
+    for obj in all_objects:
+        props = obj.properties
+
+        # Whatever “cleaning” means in your logic:
+        # Example: delete empty/missing chunks
+        if props is None or props.get("text") in [None, "", " "]:
+            collection.data.delete(uuid=obj.uuid)
+            cleaned += 1
+
+    return {"total": len(all_objects), "cleaned": cleaned}
+
 
 
 # ==========================================
 # 7. FIND CORRUPTED CHUNKS (NO DELETE)
 # ==========================================
 def find_corrupted_chunks():
-    bad = []
-    data = collection.query.fetch_objects(limit=999999)
+    all_objects = []
+    cursor = None
+    batch_size = 5000  # safe batch limit
 
-    for obj in data.objects:
-        chunk = obj.properties.get("chunk", "")
-        if not is_human_readable(chunk):
-            bad.append({
-                "id": obj.uuid,
-                "preview": chunk[:200],
-                "doc_id": obj.properties.get("doc_id"),
-            })
-    return bad
+    while True:
+        resp = collection.query.fetch_objects(
+            limit=batch_size,
+            after=cursor
+        )
+
+        objs = resp.objects
+        if not objs:
+            break
+
+        all_objects.extend(objs)
+
+        # update cursor
+        cursor = objs[-1].uuid
+
+    corrupted = []
+    for obj in all_objects:
+        if "text" not in obj.properties or obj.properties["text"] is None:
+            corrupted.append(obj)
+
+    return corrupted
+
