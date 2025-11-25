@@ -1,0 +1,12 @@
+fastapi
+uvicorn[standard]
+python-multipart
+google-generativeai
+requests
+python-dotenv
+pydantic
+numpy
+httpx
+pypdf
+weaviate-client==4.18.1
+

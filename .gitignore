@@ -1,0 +1,106 @@
+# -----------------------------
+# Python
+# -----------------------------
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.pyo
+*.pdb
+*.pkl
+*.pickle
+
+# Virtual Environment
+venv/
+.env/
+.env.*
+
+
+# -----------------------------
+# IDE / Editor
+# -----------------------------
+.vscode/
+.idea/
+*.swp
+*.swo
+
+
+# -----------------------------
+# OS Files
+# -----------------------------
+.DS_Store
+Thumbs.db
+
+
+# -----------------------------
+# Logs
+# -----------------------------
+*.log
+logs/
+*.out
+*.err
+
+
+# -----------------------------
+# ChromaDB (vector database)
+# -----------------------------
+chroma_store/
+chroma/
+index/
+*.db
+*.sqlite
+*.parquet
+
+
+# -----------------------------
+# Docker
+# -----------------------------
+/build/
+/dist/
+*.tar
+*.bak
+docker-data/
+
+# Ignore docker-compose override files
+docker-compose.override.yml
+docker-compose.prod.yml
+
+
+# -----------------------------
+# Node / Frontend (if added)
+# -----------------------------
+node_modules/
+dist/
+.cache/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+
+# -----------------------------
+# Upload cache
+# -----------------------------
+uploads/
+temp/
+tmp/
+*.tmp
+
+
+# -----------------------------
+# Environment & Keys
+# -----------------------------
+.env
+*.env
+*.secret
+secret.txt
+apikey.txt
+
+
+# -----------------------------
+# Project specific
+# -----------------------------
+*.csv
+*.pdf
+*.docx
+*.xlsx
+data/
