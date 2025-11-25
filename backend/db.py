@@ -36,19 +36,27 @@ client = connect_with_retry()
 # ==========================================
 COLLECTION_NAME = "personal_docs"
 
-existing = [c.name for c in client.collections.list_all()]
+# Wait briefly to avoid startup race condition
+time.sleep(1.5)
 
-if COLLECTION_NAME not in existing:
-    collection = client.collections.create(
+# Check if collection exists
+try:
+    collection = client.collections.get(COLLECTION_NAME)
+    print("📁 Collection already exists:", COLLECTION_NAME)
+
+except:
+    print("📁 Creating collection:", COLLECTION_NAME)
+    client.collections.create(
         name=COLLECTION_NAME,
         properties=[
             Property(name="doc_id", data_type=DataType.TEXT),
             Property(name="chunk", data_type=DataType.TEXT),
         ],
-        vectorizer_config=None,  # Required because we use custom vectors
+        vectorizer_config=None
     )
-else:
     collection = client.collections.get(COLLECTION_NAME)
+
+
 
 # ==========================================
 # 3. ADDING CHUNKS
@@ -200,29 +208,65 @@ def clean_messed_up_data():
 # 7. FIND CORRUPTED CHUNKS (NO DELETE)
 # ==========================================
 def find_corrupted_chunks():
+    """
+    Improved corrupted-chunk detection:
+    Uses is_human_readable() + additional noise heuristics.
+    """
     all_objects = []
     cursor = None
-    batch_size = 5000  # safe batch limit
+    batch_size = 5000
 
+    # STEP 1 — Fetch all objects
     while True:
         resp = collection.query.fetch_objects(
             limit=batch_size,
             after=cursor
         )
-
         objs = resp.objects
         if not objs:
             break
 
         all_objects.extend(objs)
-
-        # update cursor
         cursor = objs[-1].uuid
 
     corrupted = []
+
+    # STEP 2 — Evaluate each chunk
     for obj in all_objects:
-        if "text" not in obj.properties or obj.properties["text"] is None:
-            corrupted.append(obj)
+        props = obj.properties or {}
+        chunk = props.get("chunk", "") or ""
+
+        # -----------------------------------------
+        # REFINED CORRUPTION DETECTION LOGIC
+        # -----------------------------------------
+
+        # 1. Base check (your original logic)
+        readable = is_human_readable(chunk)
+
+        # 2. Additional corruption heuristics
+        too_many_symbols = sum(c in string.punctuation for c in chunk) > len(chunk) * 0.35
+        weird_unicode = any(ord(c) > 50000 for c in chunk)  # rare unicode blocks
+        repeated_char = len(set(chunk)) <= 3 and len(chunk) > 20     # e.g., "aaaaaaaaaa"
+        too_few_words = len(chunk.split()) < 3
+        token_noise = any(len(t) > 30 for t in chunk.split())        # weird long tokens
+        mostly_digits = sum(c.isdigit() for c in chunk) > len(chunk) * 0.5
+
+        # 3. Final decision
+        corrupted_flag = (
+            not readable or
+            too_many_symbols or
+            weird_unicode or
+            repeated_char or
+            too_few_words or
+            token_noise or
+            mostly_digits
+        )
+
+        if corrupted_flag:
+            corrupted.append({
+                "id": obj.uuid,
+                "doc_id": props.get("doc_id"),
+                "preview": chunk[:200],
+            })
 
     return corrupted
-
