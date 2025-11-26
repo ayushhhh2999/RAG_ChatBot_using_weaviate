@@ -142,7 +142,8 @@ def fetch_all_objects(batch_size: int = _FETCH_BATCH_SIZE):
     cursor = None
 
     while True:
-        resp = collection.query.fetch_objects(limit=batch_size, after=cursor)
+        col = client.collections.get(COLLECTION_NAME)
+        resp = col.query.fetch_objects(limit=batch_size, after=cursor)
         objs = extract_objects(resp)
 
         if not objs:
