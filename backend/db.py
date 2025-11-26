@@ -375,83 +375,141 @@ def _safe_delete(uuid: str) -> bool:
 
 
 # ---------------- delete similar to prompt ----------------
-def delete_similar_to_prompt(prompt: Any, similarity_threshold: float = 0.75, search_limit: int = 5000) -> Dict[str, Any]:
+def delete_similar_to_prompt(prompt: Any, similarity_threshold: float = 0.50, search_limit: int = 5000) -> Dict[str, Any]:
     """
-    Delete objects whose semantic similarity to `prompt` >= similarity_threshold.
+    Deletes chunks semantically OR keyword-similar to the given prompt.
+    Uses:
+      - near_vector similarity
+      - BM25 keyword matching
+      - keyword boosting
+      - hybrid scoring
+    """
 
-    - prompt may be a Pydantic request object with .query or a raw string.
-    - similarity_threshold is 0..1 (e.g. 0.75 = 75%)
-    """
-    prompt_text = prompt.query if hasattr(prompt, "query") else prompt
-    if not isinstance(prompt_text, str) or prompt_text.strip() == "":
+    # ----------------------------------------------
+    # Extract prompt text safely
+    # ----------------------------------------------
+    prompt_text = getattr(prompt, "query", prompt)
+    if not isinstance(prompt_text, str) or not prompt_text.strip():
         raise ValueError("prompt must be a non-empty string")
 
-    # 1) embed prompt (your jina_embed)
-    emb = jina_embed(prompt_text)
-
-    # 2) run near_vector search and request distance metadata explicitly
+    # ----------------------------------------------
+    # Compute embedding for semantic similarity
+    # ----------------------------------------------
+    q_emb = jina_embed(prompt_text)
     col = client.collections.get(COLLECTION_NAME)
+
+    # ----------------------------------------------
+    # Run both semantic and keyword search
+    # ----------------------------------------------
     try:
-        resp = col.query.near_vector(emb, limit=search_limit, return_metadata=["distance"])
+        vec_resp = col.query.near_vector(q_emb, limit=search_limit, return_metadata=["distance"])
+        bm25_resp = col.query.bm25(
+        query=prompt_text,
+        operator=BM25Operator.or_(minimum_match=1),
+        limit=search_limit,
+        return_metadata=["score"]
+        )
     except Exception as e:
-        return {"error": "near_vector search failed", "exception": str(e)}
+        return {"error": "search failed", "exception": str(e)}
 
-    objs = getattr(resp, "objects", []) or resp.get("objects", [])
-    if not objs:
-        return {"deleted": 0, "reason": "no search results returned"}
+    # ----------------------------------------------
+    # Extract objects properly
+    # ----------------------------------------------
+    def extract(r):
+        return getattr(r, "objects", None) or []
 
+    results = extract(vec_resp) + extract(bm25_resp)
+
+    if not results:
+        return {"deleted": 0, "reason": "no results found"}
+
+    # ----------------------------------------------
+    # Keyword boosting list
+    # ----------------------------------------------
+    keywords = [
+        "ayush", "singh", "developer", "rag", "ai", 
+        "aiml", "weaviate", "tech", "stack"
+    ]
+    kw_lower = [k.lower() for k in keywords]
+
+    # ----------------------------------------------
+    # Evaluate all results
+    # ----------------------------------------------
     to_delete = []
     debug = []
-    total_checked = 0
+    checked = 0
 
-    for obj in objs:
-        total_checked += 1
-        uid = getattr(obj, "uuid", None) or obj.get("uuid")
-        props = getattr(obj, "properties", None) or obj.get("properties", {})
-        meta = getattr(obj, "metadata", None) or obj.get("metadata", {})
-        distance = getattr(meta, "distance", None) or safe_get(meta,"distance"),
+    for obj in results:
+        checked += 1
 
+        uid = getattr(obj, "uuid", None)
+        props = getattr(obj, "properties", {}) or {}
+        metadata = getattr(obj, "metadata", {}) or {}
+
+        chunk = props.get("chunk", "") or ""
+        distance = getattr(metadata, "distance", None)
+        bm25_score = getattr(metadata, "score", 0)
+
+        # ---------- Convert distance → similarity ----------
         if distance is None:
-            debug.append({"id": uid, "reason": "no distance"})
-            continue
-
-        # convert distance -> similarity
-        try:
-            d = float(distance)
-        except Exception:
-            debug.append({"id": uid, "reason": "bad distance", "raw": distance})
-            continue
-
-        if 0.0 <= d <= 1.0:
-            sim = 1.0 - d
+            vec_sim = 0.0
         else:
-            # fallback monotonic mapping for other distance types
-            sim = 1.0 / (1.0 + d)
+            try:
+                d = float(distance)
+                if 0 <= d <= 1:
+                    vec_sim = 1.0 - d
+                else:
+                    vec_sim = 1.0 / (1.0 + d)
+            except:
+                vec_sim = 0.0
 
-        debug.append({"id": uid, "distance": d, "similarity": sim, "doc_id": props.get("doc_id")})
+        # ---------- BM25 score normalize (0..1) ----------
+        try:
+            bm25_sim = min(float(bm25_score) / 10.0, 1.0)  # normalize
+        except:
+            bm25_sim = 0.0
 
-        if sim >= float(similarity_threshold):
+        # ---------- Keyword Boosting ----------
+        keyword_boost = 0.0
+        lower_chunk = chunk.lower()
+        if any(k in lower_chunk for k in kw_lower):
+            keyword_boost = 0.30  # strong boost
+
+        # ---------- Hybrid Final Score ----------
+        final_sim = 0.6 * vec_sim + 0.3 * bm25_sim + keyword_boost
+        final_sim = min(final_sim, 1.0)
+
+        debug.append({
+            "uuid": uid,
+            "chunk_preview": chunk[:180],
+            "vector_similarity": vec_sim,
+            "bm25_similarity": bm25_sim,
+            "keyword_boost": keyword_boost,
+            "final_similarity": final_sim
+        })
+
+        # ---------- Decide deletion ----------
+        if final_sim >= similarity_threshold:
             to_delete.append(uid)
 
-    deleted_ids = []
+    # ----------------------------------------------
+    # Delete matched chunks
+    # ----------------------------------------------
+    deleted = []
     failed = []
+
     for uid in to_delete:
         if not uid:
             continue
-        ok = _safe_delete(uid)
-        if ok:
-            deleted_ids.append(uid)
+        if _safe_delete(uid):
+            deleted.append(uid)
         else:
             failed.append(uid)
 
     return {
         "prompt": prompt_text,
-        "similarity_threshold": similarity_threshold,
-        "search_limit": search_limit,
-        "total_searched": total_checked,
-        "matched_for_deletion": len(to_delete),
-        "deleted_count": len(deleted_ids),
-        "deleted_ids": deleted_ids,
-        "failed_deletes": failed,
+        "matched_count": len(to_delete),
+        "deleted": deleted,
+        "failed": failed,
         "debug_sample": debug[:25],
     }
