@@ -10,3 +10,5 @@ class AskRequest(BaseModel):
 
 class ChatStoreRequest(BaseModel):
     chat: str    
+class DeleteSimilarRequest(BaseModel):
+    query: str    

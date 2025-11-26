@@ -1,12 +1,26 @@
 fastapi
 uvicorn[standard]
 python-multipart
-google-generativeai
-requests
-python-dotenv
-pydantic
-numpy
-httpx
-pypdf
+
+# Weaviate v4 (verified stable)
 weaviate-client==4.18.1
 
+# Environment & config
+python-dotenv
+
+# Validation
+pydantic
+
+# Embeddings (Jina API uses requests)
+requests
+httpx
+numpy
+
+# File parsing
+pypdf
+openai
+# LLMs - Groq
+groq
+
+# Optional but recommended for stability
+typing_extensions

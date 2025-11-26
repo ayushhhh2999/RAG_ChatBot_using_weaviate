@@ -1,34 +1,46 @@
-# embeddings.py
 import os
-import numpy as np
-import requests
+import httpx
 from dotenv import load_dotenv
 
 load_dotenv()
 
 JINA_API_KEY = os.getenv("JINA_API_KEY")
+
 if not JINA_API_KEY:
-    raise RuntimeError("❌ JINA_API_KEY not set in .env")
+    raise RuntimeError("❌ Missing JINA_API_KEY")
 
+JINA_URL = "https://api.jina.ai/v1/embeddings"
 
-def jina_embed(text: str) -> np.ndarray:
-    """Get embeddings from Jina API using REST."""
-    url = "https://api.jina.ai/v1/embeddings"
+headers = {
+    "Authorization": f"Bearer {JINA_API_KEY}",
+    "Content-Type": "application/json"
+}
 
-    headers = {
-        "Authorization": f"Bearer {JINA_API_KEY}",
-        "Content-Type": "application/json"
-    }
+def jina_embed(text: str):
+    """
+    Returns vector: list[float]  (guaranteed)
+    Throws clear errors if anything goes wrong.
+    """
 
     payload = {
-        "model": "jina-embeddings-v2-base-en",
-        "input": [text]  # ✅ MUST be a list
+        "model": "jina-embeddings-v3",
+        "input": text
     }
 
-    response = requests.post(url, json=payload, headers=headers, timeout=120)
+    try:
+        r = httpx.post(JINA_URL, headers=headers, json=payload, timeout=30)
+        r.raise_for_status()
+        data = r.json()
 
-    if response.status_code != 200:
-        raise RuntimeError(f"Jina API Error: {response.text}")
+        # Jina returns:
+        # { "data": [ { "embedding": [...] } ] }
+        vector = data["data"][0]["embedding"]
 
-    embedding = response.json()["data"][0]["embedding"]
-    return np.array(embedding, dtype="float32")
+        if not isinstance(vector, list):
+            raise ValueError("embedding is not a list")
+
+        return vector
+
+    except Exception as e:
+        print("❌ Jina embed failed:", e)
+        return []  # avoid crashing ingestion

@@ -6,19 +6,29 @@ from typing import List
 from dotenv import load_dotenv
 from pypdf import PdfReader
 import io
+
+# NEW GROQ CLIENT
+from openai import OpenAI
+
 load_dotenv()
 
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+groq_client = OpenAI(
+    api_key=GROQ_API_KEY,
+    base_url="https://api.groq.com/openai/v1"
+)
 
 # ------------------------------------------------------------
-# OPTIONAL: Turn refinement ON/OFF to avoid slow ingestion
+# OPTIONAL: Turn refinement ON/OFF
 # ------------------------------------------------------------
-REFINE_WITH_LLM = False   # ← Turn ON when needed
+REFINE_WITH_LLM = False  # Set True only when needed
 # ------------------------------------------------------------
+
+
+# ---------------------- FILE TEXT EXTRACTOR ----------------------
 def extract_text_from_file(file_bytes: bytes, filename: str) -> str:
     ext = filename.lower().split(".")[-1]
 
-    # PDF case
     if ext == "pdf":
         reader = PdfReader(io.BytesIO(file_bytes))
         text = ""
@@ -26,56 +36,47 @@ def extract_text_from_file(file_bytes: bytes, filename: str) -> str:
             text += page.extract_text() or ""
         return text
 
-    # TXT, MD etc
     return file_bytes.decode("utf-8", errors="ignore")
 
-# ---------------------- ASYNC LLM REFINER ----------------------
+
+# ---------------------- ASYNC GROQ REFINER ----------------------
 async def refine_chunk_with_llm_async(chunk: str) -> str:
     """
-    Refine text using Gemini. (ASYNC)
-    Safe: Returns original chunk if LLM fails.
+    Text refinement using Groq Responses API.
+    Falls back to original chunk on ANY error.
     """
 
     prompt = f"""
-You are a text normalization engine for a RAG system.
+You are a text-refinement engine for a Retrieval-Augmented Generation (RAG) system.
 
 Rewrite the text to:
-- remain meaningful,
-- stay accurate,
-- remove noise,
-- improve clarity + structure,
-- optimize for embedding retrieval.
+- improve clarity
+- remove noise
+- remain factual
+- enhance semantic quality
+- keep meaning intact
 
-Text:
+TEXT:
 \"\"\"{chunk}\"\"\"
     """
 
-    url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent"
-
-    payload = {
-        "contents": [{
-            "parts": [{"text": prompt}]
-        }]
-    }
-
     try:
-        async with httpx.AsyncClient(timeout=20) as client:
-            res = await client.post(url, json=payload, params={"key": GEMINI_API_KEY})
-            data = res.json()
+        resp = groq_client.responses.create(
+            model="llama-3.3-70b-versatile",
+            input=prompt,
+            max_output_tokens=512
+        )
 
-        refined = data["candidates"][0]["content"]["parts"][0]["text"]
-        return refined.strip()
+        return resp.output_text.strip()
 
     except Exception as e:
-        print("⚠️ Gemini refinement failed:", e)
-        return chunk  # fallback safe
+        print("⚠️ Groq refinement failed:", e)
+        return chunk
 
 
 # ---------------------- SYNC WRAPPER ----------------------
 def refine_chunk_with_llm(chunk: str) -> str:
-    """
-    Sync wrapper for the async LLM refinement.
-    """
+    """Run async refiner synchronously (FastAPI safe)."""
     return asyncio.run(refine_chunk_with_llm_async(chunk))
 
 
@@ -83,8 +84,7 @@ def refine_chunk_with_llm(chunk: str) -> str:
 def chunk_text(text: str, chunk_size_chars: int = 1000, overlap: int = 200) -> List[str]:
     """
     Clean + chunk text.
-    Optionally refine using LLM.
-    Always returns normal Python list of strings.
+    Optionally refine chunks using Groq LLM.
     """
 
     text = re.sub(r"\s+", " ", text).strip()
@@ -97,7 +97,7 @@ def chunk_text(text: str, chunk_size_chars: int = 1000, overlap: int = 200) -> L
         chunk = text[start:end]
 
         if REFINE_WITH_LLM:
-            refined = refine_chunk_with_llm(chunk)  # safe sync wrapper
+            refined = refine_chunk_with_llm(chunk)
             chunks.append(refined)
         else:
             chunks.append(chunk)
@@ -112,18 +112,24 @@ def chunk_text(text: str, chunk_size_chars: int = 1000, overlap: int = 200) -> L
 # ---------------------- PROMPT BUILDER ----------------------
 def build_prompt(query: str, retrieved_chunks):
     """
-    Build context-aware RAG prompt.
+    Build final RAG prompt sent to Groq (Responses API).
     """
 
     ctx = "\n\n".join(
-        [f"Source [{r.get('id', i)}]: {r['document']}" for i, r in enumerate(retrieved_chunks)]
+        [
+            f"Source [{idx}] (doc_id: {r.get('id')}):\n{r['document']}"
+            for idx, r in enumerate(retrieved_chunks)
+        ]
     )
 
-    prompt = f"""
-You are an intelligent, helpful assistant.
+    return f"""
+You are an intelligent assistant for a RAG system.
 
-Use ONLY the context below. If the answer is not present in the context,
-respond with: "I don't know".
+RULES:
+- Use ONLY the provided context.
+- If the answer is not in the context, reply strictly: "I don't know".
+- Be concise and helpful.
+- Do NOT hallucinate.
 
 ---------------------
 CONTEXT:
@@ -133,8 +139,5 @@ CONTEXT:
 USER QUESTION:
 {query}
 
-Provide a clear, human-friendly, concise answer.
+Provide the most accurate answer using ONLY the context.
 """
-    return prompt
-
-
